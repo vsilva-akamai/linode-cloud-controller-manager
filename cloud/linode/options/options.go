@@ -13,6 +13,7 @@ var Options struct {
 	KubeconfigFlag                    *pflag.Flag
 	LinodeGoDebug                     bool
 	EnableRouteController             bool
+	EnableCalicoRouteController       bool
 	EnableTokenHealthChecker          bool
 	VPCNames                          []string
 	VPCIDs                            []int

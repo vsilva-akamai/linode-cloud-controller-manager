@@ -131,10 +131,20 @@ func newCloud() (cloudprovider.Interface, error) {
 		klog.Infof("Using NodeBalancer backend IPv4 subnet ID %d for subnet name %s", options.Options.NodeBalancerBackendIPv4SubnetID, options.Options.NodeBalancerBackendIPv4SubnetName)
 	}
 
+	if options.Options.EnableRouteController && options.Options.EnableCalicoRouteController {
+		return nil, fmt.Errorf("--enable-route-controller and --enable-calico-route-controller are mutually exclusive")
+	}
+
 	instanceCache = services.NewInstances(linodeClient)
-	routes, err := newRoutes(linodeClient, instanceCache)
-	if err != nil {
-		return nil, fmt.Errorf("routes client was not created successfully: %w", err)
+
+	var routes cloudprovider.Routes
+	if options.Options.EnableCalicoRouteController {
+		routes = newCalicoRoutes()
+	} else {
+		routes, err = newRoutes(linodeClient, instanceCache)
+		if err != nil {
+			return nil, fmt.Errorf("routes client was not created successfully: %w", err)
+		}
 	}
 
 	if options.Options.LoadBalancerType != "" && !slices.Contains(supportedLoadBalancerTypes, options.Options.LoadBalancerType) {
@@ -185,6 +195,12 @@ func (c *linodeCloud) Initialize(clientBuilder cloudprovider.ControllerClientBui
 	serviceInformer := sharedInformer.Core().V1().Services()
 	nodeInformer := sharedInformer.Core().V1().Nodes()
 
+	// Inject the kubernetes clientset into the calico route controller.
+	// This must happen before the route controller starts reconciling.
+	if cr, ok := c.routes.(*calicoRoutes); ok {
+		cr.kubeClient = kubeclient
+	}
+
 	if err := startNodeIpamController(stopCh, c, nodeInformer, kubeclient); err != nil {
 		klog.Fatal("starting of node ipam controller failed", err)
 	}
@@ -226,7 +242,7 @@ func (c *linodeCloud) Clusters() (cloudprovider.Clusters, bool) {
 }
 
 func (c *linodeCloud) Routes() (cloudprovider.Routes, bool) {
-	if options.Options.EnableRouteController {
+	if options.Options.EnableRouteController || options.Options.EnableCalicoRouteController {
 		return c.routes, true
 	}
 	return nil, false

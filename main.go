@@ -83,6 +83,7 @@ func main() {
 	// Add Linode-specific flags
 	command.Flags().BoolVar(&ccmOptions.Options.LinodeGoDebug, "linodego-debug", false, "enables debug output for the LinodeAPI wrapper")
 	command.Flags().BoolVar(&ccmOptions.Options.EnableRouteController, "enable-route-controller", false, "enables route_controller for ccm")
+	command.Flags().BoolVar(&ccmOptions.Options.EnableCalicoRouteController, "enable-calico-route-controller", false, "enables Calico-aware route controller that gates NodeNetworkUnavailable on calico-node readiness")
 	command.Flags().BoolVar(&ccmOptions.Options.EnableTokenHealthChecker, "enable-token-health-checker", false, "enables Linode API token health checker")
 	command.Flags().StringSliceVar(&ccmOptions.Options.VPCNames, "vpc-names", nil, "comma separated vpc names whose routes will be managed by route-controller")
 	command.Flags().StringSliceVar(&ccmOptions.Options.SubnetNames, "subnet-names", []string{"default"}, "comma separated subnet names whose routes will be managed by route-controller (requires vpc-names flag to also be set)")
