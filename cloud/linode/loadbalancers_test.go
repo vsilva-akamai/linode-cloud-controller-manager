@@ -121,6 +121,9 @@ bSiPJQsGIKtQvyCaZY2szyOoeUGgOId+He7ITlezxKrjdj+1pLMESvAxKeo=
 const (
 	drop          string = "DROP"
 	defaultSubnet string = "default"
+	// publicLookingVPCIP is a VPC address allocated from a top-level VPC range that looks
+	// globally routable but is private, VPC-internal address space.
+	publicLookingVPCIP string = "7.24.0.5"
 )
 
 func TestCCMLoadBalancers(t *testing.T) {
@@ -4089,6 +4092,54 @@ func Test_getNodePrivateIP(t *testing.T) {
 			"10.0.1.1",
 			100,
 		},
+		{
+			// A VPC whose top-level ranges include address space that looks globally routable
+			// still hands its nodes internal addresses, and the backend selected for a
+			// NodeBalancer is that VPC address. No CIDR allowlist is involved.
+			"vpc address from a public looking range is used as the backend",
+			&v1.Node{
+				Status: v1.NodeStatus{
+					Addresses: []v1.NodeAddress{
+						{
+							Type:    v1.NodeInternalIP,
+							Address: publicLookingVPCIP,
+						},
+						{
+							Type:    v1.NodeExternalIP,
+							Address: "172.234.31.123",
+						},
+						{
+							Type:    v1.NodeInternalIP,
+							Address: "192.168.159.135",
+						},
+					},
+				},
+			},
+			publicLookingVPCIP,
+			100,
+		},
+		{
+			// The node private IP annotation is still ignored when a subnet is targeted, so a
+			// public-looking VPC address does not get replaced by the legacy private address.
+			"vpc address from a public looking range wins over the private ip annotation",
+			&v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						annotations.AnnLinodeNodePrivateIP: "192.168.42.42",
+					},
+				},
+				Status: v1.NodeStatus{
+					Addresses: []v1.NodeAddress{
+						{
+							Type:    v1.NodeInternalIP,
+							Address: publicLookingVPCIP,
+						},
+					},
+				},
+			},
+			publicLookingVPCIP,
+			100,
+		},
 	}
 
 	for _, test := range testcases {
@@ -4472,6 +4523,43 @@ func Test_buildNodeBalancerNodeConfigRebuildOptionsOmitsSubnetIDForIPv6Backends(
 	}
 	if opts.SubnetID != 0 {
 		t.Fatalf("expected IPv6 backend rebuild options to omit subnet ID, got %#v", opts)
+	}
+}
+
+func Test_buildNodeBalancerConfigNodesUsesPublicLookingVPCAddress(t *testing.T) {
+	lb := &loadbalancers{}
+	service := &v1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc-test", Namespace: "default"}}
+	nodes := []*v1.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+			Status: v1.NodeStatus{Addresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: publicLookingVPCIP},
+				{Type: v1.NodeExternalIP, Address: "172.234.31.123"},
+			}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-2"},
+			Status: v1.NodeStatus{Addresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "7.24.0.6"},
+				{Type: v1.NodeExternalIP, Address: "172.234.31.124"},
+			}},
+		},
+	}
+
+	got, err := lb.buildNodeBalancerConfigNodes(service, nodes, 30000, 101, false, linodego.ProtocolTCP, map[string]int{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(nodes) {
+		t.Fatalf("expected %d backend nodes, got %d", len(nodes), len(got))
+	}
+	for i, want := range []string{publicLookingVPCIP + ":30000", "7.24.0.6:30000"} {
+		if got[i].Address != want {
+			t.Fatalf("expected backend node %d to use the VPC address %q, got %q", i, want, got[i].Address)
+		}
+		if got[i].SubnetID != 101 {
+			t.Fatalf("expected backend node %d to target the VPC subnet, got %#v", i, got[i])
+		}
 	}
 }
 

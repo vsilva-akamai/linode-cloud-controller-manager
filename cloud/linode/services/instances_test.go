@@ -446,6 +446,88 @@ func TestMetadataRetrieval(t *testing.T) {
 	}
 }
 
+// TestPublicLookingVPCAddresses covers VPCs that carry a top-level IPv4 range which looks
+// globally routable but is private, VPC-internal address space. An address allocated from such a
+// range is a node's internal address because of where it comes from, not because it falls in
+// RFC1918 space, while the instance's ordinary public address stays external.
+func TestPublicLookingVPCAddresses(t *testing.T) {
+	ctx := t.Context()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	client := mocks.NewMockClient(ctrl)
+
+	const (
+		vpcName = "public-looking-vpc"
+		vpcID   = 77
+	)
+
+	t.Run("VPC address in a public looking range is an internal node address", func(t *testing.T) {
+		id := 4242
+		publicIPv4 := net.ParseIP("172.234.31.123")
+		privateIPv4 := net.ParseIP("192.168.159.135")
+		vpcIP := "7.24.0.5"
+
+		options.Options.VPCNames = []string{vpcName}
+		VpcIDs[vpcName] = vpcID
+		t.Cleanup(func() {
+			options.Options.VPCNames = []string{}
+			delete(VpcIDs, vpcName)
+		})
+
+		client.EXPECT().
+			ListInstances(gomock.Any(), &linodego.ListOptions{PageSize: linodeClient.MaxPageSize, Filter: "{}"}).
+			Times(1).
+			Return([]linodego.Instance{{
+				ID:     id,
+				Label:  instanceName,
+				Type:   typeG6,
+				Region: usEast,
+				IPv4:   []net.IP{publicIPv4, privateIPv4},
+			}}, nil)
+		client.EXPECT().
+			ListVPCIPAddresses(gomock.Any(), vpcID, gomock.Any()).
+			Return([]linodego.VPCIP{{Address: &vpcIP, VPCID: vpcID, LinodeID: id}}, nil)
+		client.EXPECT().
+			ListVPCIPv6Addresses(gomock.Any(), vpcID, gomock.Any()).
+			Return([]linodego.VPCIP{}, nil)
+
+		instances := NewInstances(client)
+		meta, err := instances.InstanceMetadata(ctx, nodeWithName(instanceName))
+		require.NoError(t, err)
+
+		// The VPC address is listed first and classified as internal, the instance's ordinary
+		// public address stays external, and the existing private address is untouched.
+		assert.Equal(t, []v1.NodeAddress{
+			{Type: v1.NodeHostName, Address: instanceName},
+			{Type: v1.NodeInternalIP, Address: vpcIP},
+			{Type: v1.NodeExternalIP, Address: publicIPv4.String()},
+			{Type: v1.NodeInternalIP, Address: privateIPv4.String()},
+		}, meta.NodeAddresses)
+	})
+
+	t.Run("classification does not depend on the range being RFC1918", func(t *testing.T) {
+		nc := &nodeCache{nodes: map[int]linodeInstance{}}
+		instance := linodego.Instance{
+			ID:   1,
+			IPv4: []net.IP{net.ParseIP("172.234.31.123"), net.ParseIP("192.168.159.135")},
+		}
+
+		for _, vpcIP := range []string{"7.24.0.5", "10.24.0.5", "8.8.8.8", "192.168.128.5"} {
+			ips := nc.getInstanceAddresses(instance, []string{vpcIP}, map[string]v1.NodeAddressType{})
+			require.NotEmpty(t, ips)
+			assert.Equal(t, vpcIP, ips[0].ip)
+			assert.Equal(t, v1.NodeInternalIP, ips[0].ipType, "VPC address %s should be internal", vpcIP)
+		}
+
+		// Addresses that are not VPC addresses keep their existing classification.
+		ips := nc.getInstanceAddresses(instance, nil, map[string]v1.NodeAddressType{})
+		require.Len(t, ips, 2)
+		assert.Equal(t, v1.NodeExternalIP, ips[0].ipType)
+		assert.Equal(t, v1.NodeInternalIP, ips[1].ipType)
+	})
+}
+
 func TestMalformedProviders(t *testing.T) {
 	ctx := t.Context()
 	ctrl := gomock.NewController(t)
